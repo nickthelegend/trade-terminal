@@ -1,55 +1,29 @@
+import os
+import json
+from datetime import datetime
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
-import sqlite3
-import json
-import os
-from datetime import datetime
+from supabase import create_client, Client
+from dotenv import load_dotenv
 
-# Use /tmp for SQLite on Vercel as it's the only writable directory
-IS_VERCEL = "VERCEL" in os.environ
-DB_PATH = '/tmp/trades.db' if IS_VERCEL else 'trades.db'
+load_dotenv()
 
 app = Flask(__name__, static_folder='frontend')
 CORS(app)
 
-def get_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+# Supabase Config
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
-def init_db():
-    with get_db() as conn:
-        conn.execute('''
-            CREATE TABLE IF NOT EXISTS trades (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                symbol TEXT NOT NULL,
-                direction TEXT NOT NULL,
-                entry_low REAL NOT NULL,
-                entry_high REAL NOT NULL,
-                take_profits TEXT NOT NULL,
-                stop_loss REAL NOT NULL,
-                status TEXT DEFAULT 'open',
-                created_at TEXT NOT NULL,
-                closed_at TEXT,
-                pnl REAL DEFAULT 0,
-                notes TEXT
-            )
-        ''')
-        conn.commit()
+if not SUPABASE_URL or not SUPABASE_KEY:
+    print("⚠️ SUPABASE_URL or SUPABASE_KEY not set. Local logic might fail.")
+    supabase = None
+else:
+    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-def row_to_dict(row):
-    d = dict(row)
-    # Ensure take_profits is parsed from JSON string
-    try:
-        d['take_profits'] = json.loads(d['take_profits'])
-    except:
-        d['take_profits'] = []
-    return d
-
-@app.before_request
-def ensure_db_initialized():
-    # Always run init_db to ensure table exists in /tmp on Vercel
-    init_db()
+def format_trade(t):
+    # Supabase returns numeric as float/decimal, timestamps as strings
+    return t
 
 @app.route('/')
 def index():
@@ -63,29 +37,21 @@ def create_trade():
         if field not in data:
             return jsonify({'error': f'Missing field: {field}'}), 400
 
-    direction = data['direction'].upper()
-    if direction not in ['LONG', 'SHORT']:
-        return jsonify({'error': 'direction must be LONG or SHORT'}), 400
+    trade_data = {
+        "symbol": data['symbol'].upper(),
+        "direction": data['direction'].upper(),
+        "entry_low": float(data['entry_low']),
+        "entry_high": float(data['entry_high']),
+        "take_profits": data['take_profits'], # Supabase handles JSONB
+        "stop_loss": float(data['stop_loss']),
+        "status": "open"
+    }
 
-    with get_db() as conn:
-        cur = conn.execute('''
-            INSERT INTO trades (symbol, direction, entry_low, entry_high, take_profits, stop_loss, status, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, 'open', ?)
-        ''', (
-            data['symbol'].upper(),
-            direction,
-            float(data['entry_low']),
-            float(data['entry_high']),
-            json.dumps([float(tp) for tp in data['take_profits']]),
-            float(data['stop_loss']),
-            datetime.utcnow().isoformat()
-        ))
-        trade_id = cur.lastrowid
-        conn.commit()
-        trade_row = conn.execute('SELECT * FROM trades WHERE id = ?', (trade_id,)).fetchone()
-        trade = row_to_dict(trade_row)
-
-    return jsonify({'success': True, 'trade': trade}), 201
+    try:
+        response = supabase.table("trades").insert(trade_data).execute()
+        return jsonify({'success': True, 'trade': response.data[0]}), 201
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/trades', methods=['GET'])
 def get_trades():
@@ -93,83 +59,65 @@ def get_trades():
     per_page = int(request.args.get('per_page', 4))
     status = request.args.get('status')
 
-    with get_db() as conn:
-        query = 'SELECT * FROM trades'
-        params = []
+    try:
+        query = supabase.table("trades").select("*", count="exact").order("created_at", desc=True)
         if status:
-            query += ' WHERE status = ?'
-            params.append(status)
-        query += ' ORDER BY created_at DESC'
-
-        all_trades = [row_to_dict(r) for r in conn.execute(query, params).fetchall()]
-        total = len(all_trades)
+            query = query.eq("status", status)
+        
+        # Pagination
         start = (page - 1) * per_page
-        trades = all_trades[start:start + per_page]
-
-    return jsonify({
-        'trades': trades,
-        'total': total,
-        'page': page,
-        'per_page': per_page,
-        'total_pages': max(1, (total + per_page - 1) // per_page)
-    })
-
-@app.route('/api/trades/<int:trade_id>', methods=['GET'])
-def get_trade(trade_id):
-    with get_db() as conn:
-        row = conn.execute('SELECT * FROM trades WHERE id = ?', (trade_id,)).fetchone()
-        if not row:
-            return jsonify({'error': 'Trade not found'}), 404
-        return jsonify(row_to_dict(row))
+        end = start + per_page - 1
+        response = query.range(start, end).execute()
+        
+        total = response.count
+        return jsonify({
+            'trades': response.data,
+            'total': total,
+            'page': page,
+            'per_page': per_page,
+            'total_pages': max(1, (total + per_page - 1) // per_page)
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/trades/<int:trade_id>', methods=['PATCH'])
 def update_trade(trade_id):
     data = request.get_json()
-    with get_db() as conn:
-        row = conn.execute('SELECT * FROM trades WHERE id = ?', (trade_id,)).fetchone()
-        if not row:
-            return jsonify({'error': 'Trade not found'}), 404
+    allowed = ['status', 'pnl', 'notes']
+    update_data = {}
+    for field in allowed:
+        if field in data:
+            update_data[field] = data[field]
+    
+    if 'status' in data and data['status'] in ['success', 'failed']:
+        update_data['closed_at'] = datetime.utcnow().isoformat()
 
-        updates = []
-        params = []
-        allowed = ['status', 'pnl', 'notes', 'closed_at']
-        for field in allowed:
-            if field in data:
-                updates.append(f'{field} = ?')
-                params.append(data[field])
-
-        if 'status' in data and data['status'] in ['success', 'failed']:
-            updates.append('closed_at = ?')
-            params.append(datetime.utcnow().isoformat())
-
-        if updates:
-            params.append(trade_id)
-            conn.execute(f'UPDATE trades SET {", ".join(updates)} WHERE id = ?', params)
-            conn.commit()
-
-        trade_row = conn.execute('SELECT * FROM trades WHERE id = ?', (trade_id,)).fetchone()
-        trade = row_to_dict(trade_row)
-        return jsonify({'success': True, 'trade': trade})
+    try:
+        response = supabase.table("trades").update(update_data).eq("id", trade_id).execute()
+        return jsonify({'success': True, 'trade': response.data[0]})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/trades/<int:trade_id>', methods=['DELETE'])
 def delete_trade(trade_id):
-    with get_db() as conn:
-        conn.execute('DELETE FROM trades WHERE id = ?', (trade_id,))
-        conn.commit()
-    return jsonify({'success': True})
+    try:
+        supabase.table("trades").delete().eq("id", trade_id).execute()
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/stats', methods=['GET'])
 def get_stats():
-    with get_db() as conn:
-        rows = conn.execute('SELECT status, pnl FROM trades').fetchall()
+    try:
+        response = supabase.table("trades").select("status", "pnl").execute()
+        rows = response.data
         total = len(rows)
         wins = sum(1 for r in rows if r['status'] == 'success')
         losses = sum(1 for r in rows if r['status'] == 'failed')
-        total_pnl = sum(r['pnl'] or 0 for r in rows)
-    return jsonify({'total': total, 'wins': wins, 'losses': losses, 'total_pnl': round(total_pnl, 4)})
-
-# Initialize DB on startup as well
-init_db()
+        total_pnl = sum(r.get('pnl', 0) or 0 for r in rows)
+        return jsonify({'total': total, 'wins': wins, 'losses': losses, 'total_pnl': round(total_pnl, 4)})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
     app.run(debug=True, port=5001)
