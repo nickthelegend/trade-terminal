@@ -12,8 +12,8 @@ app = Flask(__name__, static_folder='frontend')
 CORS(app)
 
 # Supabase Config
-SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+SUPABASE_URL = os.environ.get("NEXT_PUBLIC_SUPABASE_URL") or os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("NEXT_PUBLIC_SUPABASE_KEY") or os.environ.get("SUPABASE_KEY")
 
 if not SUPABASE_URL or not SUPABASE_KEY:
     print("⚠️ SUPABASE_URL or SUPABASE_KEY not set. Local logic might fail.")
