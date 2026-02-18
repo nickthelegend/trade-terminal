@@ -10,6 +10,7 @@ IS_VERCEL = "VERCEL" in os.environ
 DB_PATH = '/tmp/trades.db' if IS_VERCEL else 'trades.db'
 
 app = Flask(__name__, static_folder='frontend')
+CORS(app)
 
 def get_db():
     conn = sqlite3.connect(DB_PATH)
@@ -38,11 +39,16 @@ def init_db():
 
 def row_to_dict(row):
     d = dict(row)
-    d['take_profits'] = json.loads(d['take_profits'])
+    # Ensure take_profits is parsed from JSON string
+    try:
+        d['take_profits'] = json.loads(d['take_profits'])
+    except:
+        d['take_profits'] = []
     return d
 
 @app.before_request
 def ensure_db_initialized():
+    # Always run init_db to ensure table exists in /tmp on Vercel
     init_db()
 
 @app.route('/')
@@ -76,8 +82,9 @@ def create_trade():
         ))
         trade_id = cur.lastrowid
         conn.commit()
+        trade_row = conn.execute('SELECT * FROM trades WHERE id = ?', (trade_id,)).fetchone()
+        trade = row_to_dict(trade_row)
 
-    trade = row_to_dict(conn.execute('SELECT * FROM trades WHERE id = ?', (trade_id,)).fetchone())
     return jsonify({'success': True, 'trade': trade}), 201
 
 @app.route('/api/trades', methods=['GET'])
@@ -140,7 +147,8 @@ def update_trade(trade_id):
             conn.execute(f'UPDATE trades SET {", ".join(updates)} WHERE id = ?', params)
             conn.commit()
 
-        trade = row_to_dict(conn.execute('SELECT * FROM trades WHERE id = ?', (trade_id,)).fetchone())
+        trade_row = conn.execute('SELECT * FROM trades WHERE id = ?', (trade_id,)).fetchone()
+        trade = row_to_dict(trade_row)
         return jsonify({'success': True, 'trade': trade})
 
 @app.route('/api/trades/<int:trade_id>', methods=['DELETE'])
@@ -160,6 +168,8 @@ def get_stats():
         total_pnl = sum(r['pnl'] or 0 for r in rows)
     return jsonify({'total': total, 'wins': wins, 'losses': losses, 'total_pnl': round(total_pnl, 4)})
 
+# Initialize DB on startup as well
+init_db()
+
 if __name__ == '__main__':
-    init_db()
     app.run(debug=True, port=5001)
