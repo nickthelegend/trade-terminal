@@ -576,7 +576,7 @@
 <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@5.0.5/dist/lightweight-charts.standalone.production.js"></script>
 
 <script>
-const API = 'http://localhost:5001/api';
+const API = window.location.origin + '/api';
 let currentPage = 1, totalPages = 1, allTrades = [], charts = {}, selectedDir = 'LONG';
 
 async function loadAll() { await Promise.all([loadStats(), loadPage(currentPage)]); }
