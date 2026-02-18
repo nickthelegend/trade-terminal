@@ -41,6 +41,10 @@ def row_to_dict(row):
     d['take_profits'] = json.loads(d['take_profits'])
     return d
 
+@app.before_request
+def ensure_db_initialized():
+    init_db()
+
 @app.route('/')
 def index():
     return send_from_directory('frontend', 'index.html')
