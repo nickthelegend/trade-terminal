@@ -5,10 +5,11 @@ import json
 import os
 from datetime import datetime
 
-app = Flask(__name__, static_folder='frontend')
-CORS(app)
+# Use /tmp for SQLite on Vercel as it's the only writable directory
+IS_VERCEL = "VERCEL" in os.environ
+DB_PATH = '/tmp/trades.db' if IS_VERCEL else 'trades.db'
 
-DB_PATH = 'trades.db'
+app = Flask(__name__, static_folder='frontend')
 
 def get_db():
     conn = sqlite3.connect(DB_PATH)
