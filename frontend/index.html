@@ -467,6 +467,7 @@
     <div class="stat-pill"><span class="label">Total P&L</span><span class="value" id="stat-pnl">0.00</span></div>
   </div>
   <div class="header-actions">
+    <button class="btn" onclick="openPortfolioModal()">💼 Portfolio</button>
     <button class="btn" onclick="openTradesModal()">📊 Trades</button>
     <button class="btn primary" onclick="openModal()">+ New Trade</button>
     <button class="btn" onclick="loadAll()">↻ Refresh</button>
@@ -497,7 +498,7 @@
   </div>
 </div>
 
-<!-- NEW TRADE MODAL (CLOSED BY DEFAULT) -->
+<!-- NEW TRADE MODAL -->
 <div class="modal-overlay" id="modal">
   <div class="modal">
     <div class="modal-header">
@@ -539,28 +540,14 @@
   </div>
 </div>
 
-<!-- PORTFOLIO HISTORY MODAL (CLOSED BY DEFAULT) -->
+<!-- TRADES MODAL -->
 <div class="modal-overlay" id="trades-modal">
   <div class="modal large">
     <div class="modal-header">
-      <span class="modal-title">Portfolio History</span>
+      <span class="modal-title">Trade History</span>
       <button class="modal-close" onclick="closeTradesModal()">✕</button>
     </div>
     <div class="modal-body">
-      <div class="trades-summary">
-        <div class="summary-box">
-          <div class="summary-label">Total Portfolio Profit</div>
-          <div class="summary-value" id="m-total-pnl">0.00</div>
-        </div>
-        <div class="summary-box">
-          <div class="summary-label">Live Trades</div>
-          <div class="summary-value" id="m-live-count">0</div>
-        </div>
-        <div class="summary-box">
-          <div class="summary-label">Completed Trades</div>
-          <div class="summary-value" id="m-done-count">0</div>
-        </div>
-      </div>
       <table class="trades-table">
         <thead>
           <tr><th>Symbol</th><th>Type</th><th>Status</th><th>Entry Zone</th><th>P&L</th><th>Created</th></tr>
@@ -571,13 +558,39 @@
   </div>
 </div>
 
+<!-- PORTFOLIO MODAL -->
+<div class="modal-overlay" id="portfolio-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <span class="modal-title">Portfolio Analytics</span>
+      <button class="modal-close" onclick="closePortfolioModal()">✕</button>
+    </div>
+    <div class="modal-body">
+      <div style="display:flex; flex-direction:column; gap:16px;">
+        <div class="summary-box">
+          <div class="summary-label">Total Amount of Trades</div>
+          <div class="summary-value" id="p-total-count" style="font-size:24px; color:var(--accent)">0</div>
+        </div>
+        <div class="summary-box">
+          <div class="summary-label">Total Portfolio P&L</div>
+          <div class="summary-value" id="p-total-pnl" style="font-size:24px;">0.00</div>
+        </div>
+        <div class="summary-box">
+          <div class="summary-label">Win Rate</div>
+          <div class="summary-value" id="p-win-rate" style="font-size:24px; color:var(--green)">0%</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@5.0.5/dist/lightweight-charts.standalone.production.js"></script>
 
 <script>
 const API = window.location.origin + '/api';
-let currentPage = 1, totalPages = 1, allTrades = [], charts = {}, selectedDir = 'LONG';
+let currentPage = 1, totalPages = 1, allTrades = [], charts = {}, selectedDir = 'LONG', livePriceCache = {};
 
 async function loadAll() { await Promise.all([loadStats(), loadPage(currentPage)]); }
 
@@ -646,19 +659,9 @@ function initChart(idx, trade) {
   drawLine(trade.entry_high, 'rgba(255,213,79,0.5)', LightweightCharts.LineStyle.Dashed, 'Entry');
   trade.take_profits.forEach((tp, i) => drawLine(tp, `rgba(0,255,136,${0.3 + i*0.1})`, LightweightCharts.LineStyle.Dotted, `TP${i+1}`));
   drawLine(trade.stop_loss, 'rgba(255,58,92,0.7)', LightweightCharts.LineStyle.Dashed, 'SL');
-
-  // Mark Vertical Entry Line
+  
   const entryTime = Math.floor(new Date(trade.created_at).getTime() / 1000);
-  candleSeries.setMarkers([
-    {
-      time: entryTime,
-      position: 'inBar',
-      color: 'rgba(255, 213, 79, 1)',
-      shape: 'arrowUp',
-      text: 'ENTRY',
-      size: 1,
-    }
-  ]);
+  candleSeries.setMarkers([{ time: entryTime, position: 'inBar', color: 'rgba(255, 213, 79, 1)', shape: 'arrowUp', text: 'ENTRY', size: 1 }]);
 
   chart.timeScale().fitContent();
   charts[idx] = { chart };
@@ -666,9 +669,10 @@ function initChart(idx, trade) {
 
 function generateMockCandles(basePrice, direction) {
   const data = []; let price = basePrice * (direction === 'LONG' ? 0.98 : 1.02);
+  const now = Math.floor(Date.now()/1000);
   for (let i = 60; i >= 0; i--) {
     const vol = basePrice * 0.008, open = price, close = price + (Math.random() - 0.48) * vol;
-    data.push({ time: Math.floor(Date.now()/1000) - i*3600, open, high: Math.max(open, close)+vol*0.5, low: Math.min(open, close)-vol*0.5, close });
+    data.push({ time: now - i*3600, open, high: Math.max(open, close)+vol*0.5, low: Math.min(open, close)-vol*0.5, close });
     price = close;
   }
   return data;
@@ -679,21 +683,36 @@ function renderPositions(trades) {
   const open = trades.filter(t => t.status === 'open').length;
   document.getElementById('positions-count').textContent = `${open} active`;
   if (!trades.length) { list.innerHTML = '<div class="chart-empty"><div>◇</div><div>NO POSITIONS</div></div>'; return; }
-  list.innerHTML = trades.map(t => `
-    <div class="position-card ${t.direction.toLowerCase()} ${t.status}">
-      <div class="pos-row"><span class="pos-symbol">${t.symbol}</span><span class="status-badge ${t.status}">${t.status.toUpperCase()}</span></div>
-      <div class="pos-row"><span class="pos-dir ${t.direction.toLowerCase()}">${t.direction === 'LONG' ? '↑' : '↓'} ${t.direction}</span><span class="pos-pnl ${t.pnl > 0 ? 'profit' : t.pnl < 0 ? 'loss' : 'neutral'}">${t.pnl === 0 ? '—' : (t.pnl > 0 ? '+' : '') + t.pnl.toFixed(4)}</span></div>
-      <div class="pos-entry">Entry: ${t.entry_low} – ${t.entry_high}</div>
-      <div class="pos-actions">
-        <button class="pos-btn win" onclick="updateStatus(${t.id},'success')">✓ Win</button>
-        <button class="pos-btn lose" onclick="updateStatus(${t.id},'failed')">✗ Loss</button>
-        <button class="pos-btn del" onclick="deleteTrade(${t.id})">⌫</button>
-      </div>
-    </div>`).join('');
+  
+  list.innerHTML = trades.map(t => {
+    // Calculate simulated percent profit if trade is open
+    let pnlPercent = t.pnl; // If already set in DB
+    if (t.status === 'open') {
+        const entry = (t.entry_low + t.entry_high) / 2;
+        const mockCurrent = entry * (t.direction === 'LONG' ? 1.015 : 0.985); // 1.5% profit mock
+        pnlPercent = ((mockCurrent - entry) / entry) * 100 * (t.direction === 'LONG' ? 1 : -1);
+    }
+    
+    const pnlClass = pnlPercent > 0 ? 'profit' : pnlPercent < 0 ? 'loss' : 'neutral';
+    const pnlStr = (pnlPercent > 0 ? '+' : '') + pnlPercent.toFixed(2) + '%';
+
+    return `
+      <div class="position-card ${t.direction.toLowerCase()} ${t.status}">
+        <div class="pos-row"><span class="pos-symbol">${t.symbol}</span><span class="status-badge ${t.status}">${t.status.toUpperCase()}</span></div>
+        <div class="pos-row"><span class="pos-dir ${t.direction.toLowerCase()}">${t.direction === 'LONG' ? '↑' : '↓'} ${t.direction}</span><span class="pos-pnl ${pnlClass}">${pnlStr}</span></div>
+        <div class="pos-entry">Entry: ${t.entry_low} – ${t.entry_high}</div>
+        <div class="pos-actions">
+          <button class="pos-btn win" onclick="updateStatus(${t.id},'success')">✓ Win</button>
+          <button class="pos-btn lose" onclick="updateStatus(${t.id},'failed')">✗ Loss</button>
+          <button class="pos-btn del" onclick="deleteTrade(${t.id})">⌫</button>
+        </div>
+      </div>`;
+  }).join('');
 }
 
 async function updateStatus(id, status) {
-  await fetch(`${API}/trades/${id}`, { method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ status }) });
+  const pnlValue = status === 'success' ? 2.5 : -1.5; // Default mock pnl for status change
+  await fetch(`${API}/trades/${id}`, { method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ status, pnl: pnlValue }) });
   showToast(`Trade ${status}`, 'success'); loadAll();
 }
 
@@ -703,18 +722,31 @@ async function deleteTrade(id) {
 
 function changePage(dir) { currentPage += dir; loadPage(currentPage); }
 function updatePageUI() { document.getElementById('page-info').textContent = `PAGE ${currentPage} / ${totalPages}`; document.getElementById('prev-btn').disabled = currentPage <= 1; document.getElementById('next-btn').disabled = currentPage >= totalPages; }
+
 function openModal() { document.getElementById('modal').classList.add('active'); }
 function closeModal() { document.getElementById('modal').classList.remove('active'); }
+
 function openTradesModal() { document.getElementById('trades-modal').classList.add('active'); loadTradesHistory(); }
 function closeTradesModal() { document.getElementById('trades-modal').classList.remove('active'); }
 
+function openPortfolioModal() { document.getElementById('portfolio-modal').classList.add('active'); loadPortfolioStats(); }
+function closePortfolioModal() { document.getElementById('portfolio-modal').classList.remove('active'); }
+
+async function loadPortfolioStats() {
+  try {
+    const res = await fetch(`${API}/stats`), d = await res.json();
+    document.getElementById('p-total-count').textContent = d.total;
+    document.getElementById('p-total-pnl').textContent = (d.total_pnl >= 0 ? '+' : '') + d.total_pnl.toFixed(4) + '%';
+    document.getElementById('p-total-pnl').className = 'summary-value ' + (d.total_pnl > 0 ? 'up' : d.total_pnl < 0 ? 'down' : 'neutral');
+    const winRate = d.total > 0 ? ((d.wins / d.total) * 100).toFixed(1) : 0;
+    document.getElementById('p-win-rate').textContent = winRate + '%';
+  } catch(e) {}
+}
+
 async function loadTradesHistory() {
-  const [s, t] = await Promise.all([fetch(`${API}/stats`), fetch(`${API}/trades?per_page=100`)]);
-  const stats = await s.json(), data = await t.json();
-  document.getElementById('m-total-pnl').textContent = (stats.total_pnl >= 0 ? '+' : '') + stats.total_pnl.toFixed(4);
-  document.getElementById('m-live-count').textContent = data.trades.filter(x => x.status === 'open').length;
-  document.getElementById('m-done-count').textContent = data.trades.filter(x => x.status !== 'open').length;
-  document.getElementById('trades-history-body').innerHTML = data.trades.map(x => `<tr><td>${x.symbol}</td><td>${x.direction}</td><td>${x.status}</td><td>${x.entry_low}</td><td>${x.pnl}</td><td>${new Date(x.created_at).toLocaleDateString()}</td></tr>`).join('');
+  const t = await fetch(`${API}/trades?per_page=100`);
+  const data = await t.json();
+  document.getElementById('trades-history-body').innerHTML = data.trades.map(x => `<tr><td>${x.symbol}</td><td>${x.direction}</td><td>${x.status}</td><td>${x.entry_low}</td><td>${(x.pnl||0).toFixed(2)}%</td><td>${new Date(x.created_at).toLocaleDateString()}</td></tr>`).join('');
 }
 
 function setDir(d) { selectedDir = d; document.getElementById('btn-long').className = d==='LONG'?'radio-btn active-long':'radio-btn'; document.getElementById('btn-short').className = d==='SHORT'?'radio-btn active-short':'radio-btn'; }
@@ -729,6 +761,7 @@ function showToast(msg, type) { const t = document.getElementById('toast'); t.te
 
 document.getElementById('modal').onclick = e => { if (e.target.id === 'modal') closeModal(); };
 document.getElementById('trades-modal').onclick = e => { if (e.target.id === 'trades-modal') closeTradesModal(); };
+document.getElementById('portfolio-modal').onclick = e => { if (e.target.id === 'portfolio-modal') closePortfolioModal(); };
 
 loadAll(); setInterval(loadAll, 30000);
 </script>
