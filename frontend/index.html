@@ -646,6 +646,20 @@ function initChart(idx, trade) {
   drawLine(trade.entry_high, 'rgba(255,213,79,0.5)', LightweightCharts.LineStyle.Dashed, 'Entry');
   trade.take_profits.forEach((tp, i) => drawLine(tp, `rgba(0,255,136,${0.3 + i*0.1})`, LightweightCharts.LineStyle.Dotted, `TP${i+1}`));
   drawLine(trade.stop_loss, 'rgba(255,58,92,0.7)', LightweightCharts.LineStyle.Dashed, 'SL');
+
+  // Mark Vertical Entry Line
+  const entryTime = Math.floor(new Date(trade.created_at).getTime() / 1000);
+  candleSeries.setMarkers([
+    {
+      time: entryTime,
+      position: 'inBar',
+      color: 'rgba(255, 213, 79, 1)',
+      shape: 'arrowUp',
+      text: 'ENTRY',
+      size: 1,
+    }
+  ]);
+
   chart.timeScale().fitContent();
   charts[idx] = { chart };
 }
